@@ -50,7 +50,7 @@ def system_prompt(page, ent=None):
     scope = (f"\nThis user's entitlements: internal structure plus [{grants}]. Anything outside that is hidden from you by the server; "
              f"never speculate about hidden items and tell the user they lack the entitlement if they ask for something you cannot see.\n")
     name = (onto.get('ontology') or {}).get('name', 'Seamory AI')
-    return HEADER.replace('@NAME@', name) + guide_body + EXTRAS + scope + ctx
+    return HEADER.replace('@NAME@', name) + guide_body + EXTRAS, scope + ctx              # (stable part, per-user and per-page part): the first is cacheable
 
 
 async def openai_tools():
@@ -65,12 +65,11 @@ def _walk(x, fn):
     return x
 
 
-def _no_windows(d):
-    return {k: v for k, v in d.items() if k != 'context_chunks'}
-
-
 def _no_node_summaries(d):
-    return {k: v for k, v in d.items() if not (k == 'summary' and 'is_seed' in d)}
+    """The summaries of topics in a `related` graph (the topics themselves stay, with their links)."""
+    if isinstance(d.get('nodes'), list) and 'edges' in d:
+        return {**d, 'nodes': [{k: v for k, v in n.items() if k != 'summary'} if isinstance(n, dict) else n for n in d['nodes']]}
+    return d
 
 
 def _no_passage_text(d):
@@ -83,15 +82,15 @@ def _short_passages(d):
 
 def fit_result(result, cap):
     """A tool result as the text the model reads. Too long: leave out the heaviest optional parts first (raw passage text, then long passages), say so in the result, and only as a last resort cut the end."""
-    out = json.dumps(result, ensure_ascii=False, default=str)
+    out = json.dumps(result, ensure_ascii=False, separators=(',', ':'), default=str)
     if len(out) <= cap or not isinstance(result, dict):
         return out if len(out) <= cap else out[:cap] + '... [truncated: ask for something narrower]'
     left_out = []
-    for what, fn in (('the matched passage windows (the full pages are kept)', _no_windows), ('the summaries of graph neighbours', _no_node_summaries),
+    for what, fn in (('the summaries of related topics', _no_node_summaries),
                      ('the original passage text of each quote (read it with library_source)', _no_passage_text), ('long passages were shortened (read the rest with library_source)', _short_passages)):
         result = _walk(result, fn)
         left_out.append(what)
-        out = json.dumps({**result, 'left_out': left_out}, ensure_ascii=False, default=str)
+        out = json.dumps({**result, 'left_out': left_out}, ensure_ascii=False, separators=(',', ':'), default=str)
         if len(out) <= cap:
             return out
     return out[:cap] + '... [truncated: ask for something narrower]'
@@ -154,7 +153,8 @@ async def chat(messages, page=None, username='alfred', ent=None, conversation=No
     except RuntimeError:
         yield {'type': 'error', 'message': 'There is no published ontology yet, so there is nothing for Alfred to look at. Upload one on the Versions page.'}
         return
-    msgs = [{'role': 'system', 'content': prompt}] + [m for m in messages if m['role'] in ('user', 'assistant')][-20:]
+    stable, personal = prompt
+    msgs = [{'role': 'system', 'content': stable}, {'role': 'system', 'content': personal.strip()}] + [m for m in messages if m['role'] in ('user', 'assistant')][-20:]
     # get_access is left out: Alfred's prompt already states the user's entitlements, and models call it anyway when it is offered (a wasted round)
     docs = lib_scope is not None and await asyncio.to_thread(library_agent.available)                       # the document tools are offered only when there is something to read
     schema = [t for t in await openai_tools() if t['function']['name'] != 'get_access' and (docs or not t['function']['name'].startswith('library_'))]
@@ -171,7 +171,7 @@ async def chat(messages, page=None, username='alfred', ent=None, conversation=No
             t0, ttft, usage, finish = time.perf_counter(), None, {}, None
             try:
                 async with client.stream('POST', f'{llm.base_url()}/chat/completions', headers=headers,
-                                         json={'model': settings.get('CHAT_MODEL'), 'messages': msgs, **({} if last else {'tools': schema}), 'stream': True, 'temperature': settings.get('ALFRED_TEMPERATURE'), **({'usage': {'include': True}} if llm.is_openrouter() else {'stream_options': {'include_usage': True}}),
+                                         json={'model': settings.get('CHAT_MODEL'), 'messages': llm.with_cache(msgs, settings.get('CHAT_MODEL')), **({} if last else {'tools': schema}), 'stream': True, 'temperature': settings.get('ALFRED_TEMPERATURE'), **({'usage': {'include': True}} if llm.is_openrouter() else {'stream_options': {'include_usage': True}}),
                                        **llm.extras()}) as r:
                     if r.status_code != 200:
                         body = (await r.aread()).decode()[:300]
@@ -202,7 +202,7 @@ async def chat(messages, page=None, username='alfred', ent=None, conversation=No
                 yield {'type': 'error', 'message': f'model call failed: {e}'}
                 return
             activity.log('llm', settings.get('CHAT_MODEL'), ms=(time.perf_counter() - t0) * 1000, tokens_in=usage.get('prompt_tokens'), tokens_out=usage.get('completion_tokens'),
-                         cost=usage.get('cost'), ttft_ms=None if ttft is None else int(ttft), finish=finish, tool_calls=[c['name'] for c in calls.values()] or None)
+                         cost=usage.get('cost'), ttft_ms=None if ttft is None else int(ttft), finish=finish, tool_calls=[c['name'] for c in calls.values()] or None, cached=llm.cached_tokens(usage))
             if not calls or last:
                 activity.log('answer', text=text[:4000], **({'out_of_lookups': True} if last else {}))
                 yield {'type': 'done', 'sources': [{'id': k, 'title': v} for k, v in cites.items()]}

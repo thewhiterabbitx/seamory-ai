@@ -38,19 +38,39 @@ def model_for(role='assistant'):
     return (settings.get(f'MODEL_{role.upper()}') if f'MODEL_{role.upper()}' in settings.SPECS else '') or settings.get('CHAT_MODEL')
 
 
+def cached_tokens(usage):
+    """Input tokens the provider served from its prompt cache (OpenAI and Anthropic report it the same way through OpenRouter)."""
+    d = (usage or {}).get('prompt_tokens_details') or {}
+    return d.get('cached_tokens') or (usage or {}).get('cache_read_input_tokens')
+
+
+def with_cache(messages, model):
+    """Prompt caching. OpenAI-style models cache an identical prompt prefix by themselves; Anthropic models need the prefix marked. The system message
+    and the first user message (the task: a document, a page) are marked, unless a caller already split a message into parts with its own markers."""
+    if 'anthropic/' not in (model or '') and 'claude' not in (model or ''):
+        return messages
+    out, marked = [], 0
+    for i, m in enumerate(messages):
+        if marked < 2 and m.get('role') in ('system', 'user') and isinstance(m.get('content'), str) and len(m['content']) > 2000 and i <= 1:
+            m = {**m, 'content': [{'type': 'text', 'text': m['content'], 'cache_control': {'type': 'ephemeral'}}]}
+            marked += 1
+        out.append(m)
+    return out
+
+
 def chat(messages, role='assistant', max_tokens=1500, temperature=0.7, timeout=120):
     """One call to a chat model for a job. Returns the text; the call (model, time, tokens, cost) goes to the activity log of the current job or chat. Raises on failure."""
     model, t0 = model_for(role), time.perf_counter()
     try:
         r = httpx.post(f'{base_url()}/chat/completions', timeout=timeout, headers=headers(),
-                       json={'model': model, 'temperature': temperature, 'max_tokens': max_tokens, 'messages': messages, **extras()})
+                       json={'model': model, 'temperature': temperature, 'max_tokens': max_tokens, 'messages': with_cache(messages, model), **extras()})
         r.raise_for_status()
         data = r.json()
     except Exception as e:
         activity.log('llm', model, ms=(time.perf_counter() - t0) * 1000, ok=False, role=role, error=f'{type(e).__name__}: {str(e)[:200]}')
         raise
     u = data.get('usage') or {}
-    activity.log('llm', model, ms=(time.perf_counter() - t0) * 1000, tokens_in=u.get('prompt_tokens'), tokens_out=u.get('completion_tokens'), cost=u.get('cost'), role=role)
+    activity.log('llm', model, ms=(time.perf_counter() - t0) * 1000, tokens_in=u.get('prompt_tokens'), tokens_out=u.get('completion_tokens'), cost=u.get('cost'), role=role, cached=cached_tokens(u))
     return data['choices'][0]['message']['content'] or ''
 
 
@@ -98,7 +118,7 @@ def chat_tools(messages, tools, run_tool, role='assistant', max_rounds=8, max_to
         t0 = time.perf_counter()
         try:
             r = httpx.post(f'{base_url()}/chat/completions', timeout=timeout, headers=headers(),
-                           json={'model': model, 'temperature': temperature, 'max_tokens': max_tokens, 'messages': msgs, **({} if last else {'tools': tools}), **extras()})
+                           json={'model': model, 'temperature': temperature, 'max_tokens': max_tokens, 'messages': with_cache(msgs, model), **({} if last else {'tools': tools}), **extras()})
             r.raise_for_status()
             data = r.json()
         except Exception as e:
@@ -108,7 +128,7 @@ def chat_tools(messages, tools, run_tool, role='assistant', max_rounds=8, max_to
         u = data.get('usage') or {}
         calls = msg.get('tool_calls') or []
         activity.log('llm', model, ms=(time.perf_counter() - t0) * 1000, tokens_in=u.get('prompt_tokens'), tokens_out=u.get('completion_tokens'), cost=u.get('cost'), role=role,
-                     tool_calls=[c['function']['name'] for c in calls] or None)
+                     tool_calls=[c['function']['name'] for c in calls] or None, cached=cached_tokens(u))
         if not calls or last:
             return msg.get('content') or '', n_tools
         msgs.append({'role': 'assistant', 'content': msg.get('content'), 'tool_calls': calls})

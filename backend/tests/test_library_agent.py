@@ -11,6 +11,14 @@ from test_library_topics import REFUNDS, PREMIUM, TopicFake, analysis, DOC
 from test_access import mcp_call, _rpc
 
 
+def mcp_text(client, token, name, args=None):
+    h = {'authorization': f'Bearer {token}', 'content-type': 'application/json', 'accept': 'application/json, text/event-stream'}
+    r = client.post('/mcp', headers=h, json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': name, 'arguments': args or {}}})
+    res = r.json()['result']
+    assert len(res['content']) == 1 and 'structuredContent' not in res                     # one text block, no structured duplicate
+    return res['content'][0]['text']
+
+
 def doc(result, e):
     """The document a piece of evidence points to (documents are listed once per result)."""
     return next(d for d in result['documents'] if d['doc'] == e['doc'])
@@ -90,10 +98,16 @@ def test_context_returns_full_pages_per_collection_never_merged(client, library)
     blocks = {b['collection']: b for b in r['results']}
     assert set(blocks) == {f'Alpha {MARK_A}', f'Bravo {MARK_B}'} and blocks[f'Bravo {MARK_B}']['usage'] == 'internal'
     top = blocks[f'Alpha {MARK_A}']['topics'][0]
-    assert top['topic'] == 'refund-policy' and top['markdown'].startswith('# Refund policy') and '`[source: ' in top['markdown']            # the FULL page
-    assert top['context_chunks'] and top['context_chunks'][0]['text'] in top['markdown'] and top['link'].endswith(blocks[f'Alpha {MARK_A}']['collection_id'])
-    g = blocks[f'Alpha {MARK_A}']['graph']
-    assert {n['topic'] for n in g['nodes']} == {'refund-policy', 'premium-plan'} and {e['relation'] for e in g['edges']} == {'governs', 'related_to'}
+    assert top['topic'] == 'refund-policy' and top['markdown'].startswith('# Refund policy') and top['link'].endswith(blocks[f'Alpha {MARK_A}']['collection_id'])   # the FULL page
+    # citations are short references with one legend per collection, and nothing is lost: each reference names a real source of the collection
+    assert '[source:' not in top['markdown'] and '[s1]' in top['markdown'] and 'context_chunks' not in top
+    legend = blocks[f'Alpha {MARK_A}']['sources']
+    assert [x['ref'] for x in legend] == ['s1'] and legend[0]['name'] == 'a.md' and legend[0]['link'] == f"/library/sources/{legend[0]['source_id']}?c={blocks[f'Alpha {MARK_A}']['collection_id']}"
+    rel = blocks[f'Alpha {MARK_A}']['related']                                                # linked topics not already returned in full, and every typed link
+    assert 'refund-policy' not in {n['topic'] for n in rel['nodes']} and {e['relation'] for e in rel['edges']} == {'governs', 'related_to'}
+    raw = json.dumps(r)                                                                          # the text an MCP client receives is compact JSON
+    t = mcp_text(client, library['toks']['ab'], 'library_context', {'query': 'refund thirty days'})
+    assert '\n  ' not in t and ', "' not in t and json.loads(t) == json.loads(raw)
     assert not any(MARK_B in json.dumps(b) for n, b in blocks.items() if n.startswith('Alpha'))
     scoped = mcp_call(client, library['toks']['ab'], 'library_context', {'query': 'refund', 'collection': f'Bravo {MARK_B}'})
     assert [b['collection'] for b in scoped['results']] == [f'Bravo {MARK_B}']
@@ -177,11 +191,12 @@ def test_alfred_gets_chips_and_shrinks_long_results_in_layers(client, library):
     alfred._cites('library_context', {'results': [{'topics': [{'link': '/library/topics/premium-plan?c=x', 'title': 'Premium plan'}]}]}, acc)
     alfred._cites('library_source', {'error': 'no document'}, acc)
     assert acc == {'/library/sources/s?c=x': 'a.md', '/library/topics/refund-policy?c=x': 'Refund policy', '/library/topics/premium-plan?c=x': 'Premium plan'}
-    big = {'results': [{'topics': [{'topic': f't{i}', 'markdown': 'm' * 300, 'context_chunks': [{'text': 'w' * 800}]} for i in range(6)],
-                        'graph': {'nodes': [{'topic': 'n', 'summary': 's' * 400, 'is_seed': False}] * 5, 'edges': []}}]}
-    out = json.loads(alfred.fit_result(big, 4000))
-    assert all('context_chunks' not in t and t['markdown'] == 'm' * 300 for t in out['results'][0]['topics']) and 'full pages are kept' in out['left_out'][0]   # the pages stay
-    assert alfred.fit_result({'a': 1}, 1000) == '{"a": 1}'
+    big = {'results': [{'topics': [{'topic': f't{i}', 'markdown': 'm' * 300} for i in range(6)],
+                        'related': {'nodes': [{'topic': 'n', 'summary': 's' * 400}] * 8, 'edges': []}}]}
+    out = json.loads(alfred.fit_result(big, 3500))
+    assert all(t['markdown'] == 'm' * 300 for t in out['results'][0]['topics']) and all('summary' not in n for n in out['results'][0]['related']['nodes'])   # the pages stay
+    assert 'related topics' in out['left_out'][0]
+    assert alfred.fit_result({'a': 1}, 1000) == '{"a":1}'
     assert alfred.fit_result({'k': 'y' * 5000}, 500).endswith('[truncated: ask for something narrower]')
 
 

@@ -121,7 +121,8 @@ def _topic_hits(col, query, k):
     best = {}
     for h in index.search_topic_chunks(col.id, query, pool=k * 10):
         if h['topic_id'] not in best:
-            best[h['topic_id']] = {'topic_id': h['topic_id'], 'slug': h['slug'], 'title': h['title'], 'topic_type': h['topic_type'], 'summary': h['summary'], 'score': h['score'], 'idx': h['idx'], 'text': h['text']}
+            best[h['topic_id']] = {'topic_id': h['topic_id'], 'slug': h['slug'], 'title': h['title'], 'topic_type': h['topic_type'], 'summary': h['summary'], 'score': h['score'], 'idx': h['idx'], 'text': h['text'],
+                                   'section': ' > '.join(h.get('heading_path') or []) or None}
         else:
             best[h['topic_id']]['score'] += h['score'] * 0.1                                  # more matching chunks: a little more relevant
     for rank, t in enumerate(topics.search(col.id, query, k)):                                 # identity search: catches a topic named like the question
@@ -131,13 +132,38 @@ def _topic_hits(col, query, k):
         if row['id'] in best:
             best[row['id']]['score'] += 1 / (60 + rank)
         else:
-            best[row['id']] = {'topic_id': row['id'], 'slug': row['slug'], 'title': row['title'], 'topic_type': row['topic_type'], 'summary': row['summary'], 'score': 1 / (60 + rank), 'idx': None, 'text': row['summary']}
+            best[row['id']] = {'topic_id': row['id'], 'slug': row['slug'], 'title': row['title'], 'topic_type': row['topic_type'], 'summary': row['summary'], 'score': 1 / (60 + rank), 'idx': None, 'text': row['summary'], 'section': None}
     ranked = sorted(best.values(), key=lambda x: -x['score'])[:max(k * 2, k)]
     if ranked and rerank.available():
         order = rerank.rerank(query, [f"{r['title']}. {r['text']}" for r in ranked])
         if order:
             ranked = [ranked[i] for i in order]
     return ranked[:k]
+
+
+SOURCE_REF = re.compile(r'`?\[source:\s*([0-9a-fA-F-]{36})\]`?')
+
+
+def _short_citations(col, markdown, legend):
+    """`[source: <uuid>]` (about 15 tokens each, on every line of a page) becomes [s1], [s2]...; legend maps each short reference to the source once."""
+    def one(m):
+        sid = m.group(1).lower()
+        if sid not in legend['by_id']:
+            ref = f"s{len(legend['by_id']) + 1}"
+            legend['by_id'][sid] = ref
+            legend['list'].append({'ref': ref, 'source_id': sid})
+        return f"[{legend['by_id'][sid]}]"
+    return SOURCE_REF.sub(one, markdown or '')
+
+
+def _legend(col, legend):
+    """The sources a set of pages cites: ref, source_id, name, link (names looked up once)."""
+    if not legend['list']:
+        return []
+    with conn() as c:
+        names = {str(r['id']): r['name'] for r in c.execute('SELECT id, coalesce(title, name) AS name FROM library.source WHERE collection_id=%s AND id::text = ANY(%s)',
+                                                             (col.id, [x['source_id'] for x in legend['list']])).fetchall()}
+    return [{**x, 'name': names.get(x['source_id'], '(removed source)'), 'link': _source_link(col, x['source_id'])} for x in legend['list']]
 
 
 def _graph(col, seeds, depth=1, max_topics=20, relations=None):
@@ -175,7 +201,7 @@ def _graph(col, seeds, depth=1, max_topics=20, relations=None):
 @_safe
 def library_collections() -> dict:
     """The document collections you may read, each with its usage tag, what it holds and how many topics it has. Call it when you need the list.
-    Every result names its collection and says whether it is `public` (may be shared with customers) or `internal` (for your own understanding: do not quote it or refer to it when you talk with customers)."""
+    Each result carries its collection's usage tag: `public` may be shared with customers; `internal` is for your understanding only, do not quote it to customers."""
     cols = readable()
     out = []
     with conn() as c:
@@ -191,36 +217,40 @@ def library_context(query: Annotated[str, Field(description="The user's question
                     top_n: Annotated[int, Field(description='How many topic pages per collection (full pages: each adds a page of text)', ge=1, le=10)] = 5,
                     depth: Annotated[int, Field(description='Hops of graph traversal from the found topics', ge=1, le=3)] = 1) -> dict:
     """START HERE for any question the company documents may answer: what the organisation says about a policy, procedure, product, plan, price,
-    offer, eligibility rule or how-to. Pass the question as asked. Searches the topic pages by meaning and words, reranks, and returns for each collection: `topics` (the FULL Markdown of each matching topic page plus `context_chunks`, the matched passage
-    with its neighbours), `graph` (related topics through typed links), `relationships` (typed links whose meaning matches the question), and
-    `answerable`. If `answerable` is false, the knowledge base does not cover the question: say so, do not answer from your own knowledge.
+    offer, eligibility rule or how-to. Pass the question as asked. Searches the topic pages by meaning and words, reranks, and returns for each collection:
+    `topics` (the FULL Markdown of each matching topic page, `matched_section` naming where the question matched; pages cite sources as [s1], [s2]...,
+    listed once in `sources`), `related` (more topics linked to these, with the typed links), `relationships` (typed links whose meaning matches the
+    question), and `answerable`. If `answerable` is false, the knowledge base does not cover the question: say so, do not answer from your own knowledge.
     Cite topics by title; the claims behind a page are in library_topic_claims, the documents in library_topic_sources. A topic's `model` list names the
     data entities it concerns: to apply a rule to the data, pass them to plan_query with the rule's conditions.
-    Every result names its collection and says whether it is `public` (may be shared with customers) or `internal` (for your own understanding: do not quote it or refer to it when you talk with customers)."""
+    Each result carries its collection's usage tag: `public` may be shared with customers; `internal` is for your understanding only, do not quote it to customers."""
     cols = [_pick(collection)] if collection else readable()
     k = max(1, min(int(top_n), 10))
     blocks, total = [], 0
     for col in cols:
         hits = _topic_hits(col, query, k)
-        out = []
+        out, legend = [], {'by_id': {}, 'list': []}
         for h in hits:
             ver, md = index.published(col.id, h['topic_id'])
             if not md:
                 continue
-            window = index.topic_window(col.id, h['topic_id'], ver, h['idx'], 1, 1) if h['idx'] is not None else []
-            total += _tokens(md) + sum(w['tokens'] for w in window)
+            md = _short_citations(col, md, legend)
+            total += _tokens(md)
             out.append({'topic': h['slug'], 'title': h['title'], 'type': h['topic_type'], 'kind_of': bridge.kinds_of(col.id, [h['topic_id']]).get(h['topic_id'], []), 'summary': h['summary'], 'score': round(h['score'], 4), 'link': _link(col, h['slug']),
-                        'model': _model_of(col, h['topic_id']), 'markdown': md, 'context_chunks': [{'chunk_index': w['idx'], 'text': w['text']} for w in window]})
+                        'model': _model_of(col, h['topic_id']), **({'matched_section': h['section']} if h.get('section') else {}), 'markdown': md})
         if not out:
             continue
         ids = [topics.find(col.id, t['topic'])['id'] for t in out]
         graph = _graph(col, ids, depth, max_topics=len(ids) + 10)
+        graph['nodes'] = [n for n in graph['nodes'] if not n['is_seed']]                    # the found topics are already above, in full
+        for n in graph['nodes']:
+            n.pop('is_seed', None)
         rels = []
         for l in index.search_links(col.id, query, 8)[:5]:
             with conn() as c:
                 names = {r['id']: r['slug'] for r in c.execute('SELECT id, slug FROM library.topic WHERE id = ANY(%s)', ([l['from_topic'], l['to_topic']],)).fetchall()}
             rels.append({'from': names.get(l['from_topic']), 'relation': l['relation'], 'to': names.get(l['to_topic']), 'context': l['context']})
-        blocks.append({**_head(col), 'answerable': True, 'topics': out, 'graph': graph, 'relationships': rels})
+        blocks.append({**_head(col), 'answerable': True, 'topics': out, 'sources': _legend(col, legend), 'related': graph, 'relationships': rels})
     answerable = bool(blocks)
     return {'query': query, 'answerable': answerable, 'results': blocks, 'meta': {'topics_found': sum(len(b['topics']) for b in blocks), 'total_tokens': total},
             'note': NOTE if answerable else 'The knowledge base does not cover this question. Say so; do not answer from your own knowledge.',
@@ -237,7 +267,7 @@ def library_search(query: Annotated[str, Field(description='What you want to fin
     """Lightweight topic discovery in the company documents: slugs, titles, summaries, scores and the single best matching chunk, no page body. Use it
     to see which topics exist before reading some with library_topic, or traversing from them. Cheaper than library_context but not enough to answer from:
     to answer a question, call library_context.
-    Every result names its collection and says whether it is `public` (may be shared with customers) or `internal` (for your own understanding: do not quote it or refer to it when you talk with customers)."""
+    Each result carries its collection's usage tag: `public` may be shared with customers; `internal` is for your understanding only, do not quote it to customers."""
     cols = [_pick(collection)] if collection else readable()
     blocks = []
     for col in cols:
@@ -261,9 +291,9 @@ def _topic_or_error(col, topic):
 @_safe
 def library_topic(collection: Annotated[str, Field(description='Collection name, slug or id')],
                   topic: Annotated[str, Field(description='Topic slug, title or alias')]) -> dict:
-    """One full topic page by slug: its Markdown (sources cited as `[source: <id>]`), type, summary, aliases, typed links in both directions, the
+    """One full topic page by slug: its Markdown (sources cited as [s1], [s2]..., listed in `sources`), type, summary, aliases, typed links in both directions, the
     source documents behind it and the data-model entities it is about. The atomic claims with their quotes are in library_topic_claims.
-    Every result names its collection and says whether it is `public` (may be shared with customers) or `internal` (for your own understanding: do not quote it or refer to it when you talk with customers)."""
+    Each result carries its collection's usage tag: `public` may be shared with customers; `internal` is for your understanding only, do not quote it to customers."""
     col = _pick(collection)
     t, err = _topic_or_error(col, topic)
     if err:
@@ -274,9 +304,14 @@ def library_topic(collection: Annotated[str, Field(description='Collection name,
         aliases = [r['alias'] for r in c.execute('SELECT alias FROM library.topic_alias WHERE topic_id=%s AND collection_id=%s ORDER BY alias', (t['id'], col.id)).fetchall()]
         srcs = c.execute('SELECT s.id, s.name, s.title, ts.wiki_version FROM library.topic_source ts JOIN library.source s ON s.id=ts.source_id AND s.collection_id=ts.collection_id WHERE ts.topic_id=%s ORDER BY s.name', (t['id'],)).fetchall()
     ver, md = index.published(col.id, t['id'])
+    legend = {'by_id': {}, 'list': []}
+    md = _short_citations(col, md, legend)
+    refs = legend['by_id']
+    for r in srcs:                                                                      # sources behind the topic that the page does not cite get a reference too
+        refs.setdefault(str(r['id']), f's{len(refs) + 1}')
     return {**_head(col), 'topic': t['slug'], 'title': t['title'], 'type': t['topic_type'], 'kind_of': bridge.kinds_of(col.id, [t['id']]).get(t['id'], []), 'summary': t['summary'],
             'link': _link(col, t['slug']), 'aliases': aliases, 'version': ver, 'markdown': md, 'needs_revision': t['needs_revision'], 'model': _model_of(col, t['id']),
-            'sources': [{'source_id': str(r['id']), 'name': r['title'] or r['name'], 'wiki_version': r['wiki_version'], 'link': _source_link(col, r['id'])} for r in srcs],
+            'sources': [{'ref': refs[str(r['id'])], 'source_id': str(r['id']), 'name': r['title'] or r['name'], 'wiki_version': r['wiki_version'], 'link': _source_link(col, r['id'])} for r in srcs],
             'related': [{'relation': r['relation'], 'topic': r['slug'], 'title': r['title'], 'why': r['context']} for r in out],
             'related_from': [{'relation': r['relation'], 'topic': r['slug'], 'title': r['title'], 'why': r['context']} for r in inc],
             'next': 'Exact quotes: library_topic_claims. Related topics: library_traverse. The documents behind it: library_topic_sources, then library_source.'}
@@ -287,7 +322,7 @@ def library_topic_claims(collection: Annotated[str, Field(description='Collectio
                          topic: Annotated[str, Field(description='Topic slug, title or alias')]) -> dict:
     """All active claims of a topic, each with its exact quote copied from the source wiki, the source, the wiki version the quote comes from and the wiki
     passage it sits in. Use it when you need provenance: "where does this fact come from?". Read the quoted page with library_source.
-    Every result names its collection and says whether it is `public` (may be shared with customers) or `internal` (for your own understanding: do not quote it or refer to it when you talk with customers)."""
+    Each result carries its collection's usage tag: `public` may be shared with customers; `internal` is for your understanding only, do not quote it to customers."""
     col = _pick(collection)
     t, err = _topic_or_error(col, topic)
     if err:
@@ -309,7 +344,7 @@ def library_topic_sources(collection: Annotated[str, Field(description='Collecti
                           topic: Annotated[str, Field(description='Topic slug, title or alias')]) -> dict:
     """The source documents that contributed to a topic: name, kind, address, the version of each source wiki the topic was built from, and whether that
     wiki is still the approved one. Read a source's wiki with library_source.
-    Every result names its collection and says whether it is `public` (may be shared with customers) or `internal` (for your own understanding: do not quote it or refer to it when you talk with customers)."""
+    Each result carries its collection's usage tag: `public` may be shared with customers; `internal` is for your understanding only, do not quote it to customers."""
     col = _pick(collection)
     t, err = _topic_or_error(col, topic)
     if err:
@@ -330,7 +365,7 @@ def library_traverse(collection: Annotated[str, Field(description='Collection na
                      max_topics: Annotated[int, Field(description='Ceiling on discovered topics', ge=1, le=100)] = 20) -> dict:
     """BFS graph traversal from one or more topics over typed links, both directions: `topics` (with summaries) and `links` (typed edges with why they
     relate). Use it to see what a topic depends on, what it is part of, what replaces it. Links never leave the collection; no page text.
-    Every result names its collection and says whether it is `public` (may be shared with customers) or `internal` (for your own understanding: do not quote it or refer to it when you talk with customers)."""
+    Each result carries its collection's usage tag: `public` may be shared with customers; `internal` is for your understanding only, do not quote it to customers."""
     col = _pick(collection)
     refs = topic if isinstance(topic, list) else [topic]
     seeds = [x['id'] for x in (topics.find(col.id, r) for r in refs) if x]
@@ -347,7 +382,7 @@ def library_source_search(query: Annotated[str, Field(description='Concept or ke
     """Search the approved source wikis (the verified page written from each document) by meaning and words. Returns documents with the passage that
     matched. Use it after library_context, for a detail the topic pages do not carry, or to find which documents discuss something; then read one with
     library_source.
-    Every result names its collection and says whether it is `public` (may be shared with customers) or `internal` (for your own understanding: do not quote it or refer to it when you talk with customers)."""
+    Each result carries its collection's usage tag: `public` may be shared with customers; `internal` is for your understanding only, do not quote it to customers."""
     cols = [_pick(collection)] if collection else readable()
     k = max(1, min(int(limit), 10))
     blocks = []
@@ -409,7 +444,7 @@ def library_source(collection: Annotated[str, Field(description='Collection name
     """Read a source document. By default its approved wiki: the verified, standalone page written from the document, which topics and claims quote.
     With neither `query` nor `around` you get the whole wiki page; `query` searches inside it (by meaning and words) and returns the best passages with
     their neighbours; `around` reads a passage and its neighbours. `original=true` reads the document's original extracted text instead (unreviewed).
-    Every result names its collection and says whether it is `public` (may be shared with customers) or `internal` (for your own understanding: do not quote it or refer to it when you talk with customers)."""
+    Each result carries its collection's usage tag: `public` may be shared with customers; `internal` is for your understanding only, do not quote it to customers."""
     col = _pick(collection)
     ref = (source or '').strip()
     with conn() as c:
@@ -457,7 +492,7 @@ def library_source(collection: Annotated[str, Field(description='Collection name
 @_safe
 def library_vocabulary(collection: Annotated[str | None, Field(description='Collection name, slug or id; omit for all you may read')] = None) -> dict:
     """The topic types and relation types (with their meaning and inverse) of a collection: the vocabulary its topics and links use.
-    Every result names its collection and says whether it is `public` (may be shared with customers) or `internal` (for your own understanding: do not quote it or refer to it when you talk with customers)."""
+    Each result carries its collection's usage tag: `public` may be shared with customers; `internal` is for your understanding only, do not quote it to customers."""
     cols = [_pick(collection)] if collection else readable()
     out = []
     for col in cols:

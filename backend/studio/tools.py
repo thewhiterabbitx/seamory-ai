@@ -542,6 +542,11 @@ TOOLS = list(PUBLIC.values())
 BY_NAME = dict(PUBLIC)
 
 
+def compact(result):
+    """The text an agent receives for a tool result: JSON without indentation or spaces after separators (whitespace costs tokens on every call)."""
+    return json.dumps(result, ensure_ascii=False, separators=(',', ':'), default=str)
+
+
 def _summ(args):
     t = json.dumps(args or {}, ensure_ascii=False, default=str)
     return args if len(t) <= 600 else {'_truncated': t[:600]}

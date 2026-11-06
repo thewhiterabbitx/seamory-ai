@@ -170,7 +170,7 @@ def search_topic_chunks(cid, query, pool=50):
     query = (query or '').strip()
     if not query:
         return []
-    cols = 'x.id, x.topic_id, x.idx, x.text, x.tokens, t.slug, t.title, t.topic_type, t.summary'
+    cols = 'x.id, x.topic_id, x.idx, x.text, x.tokens, x.heading_path, t.slug, t.title, t.topic_type, t.summary'
     frm = 'library.topic_chunk x JOIN library.topic t ON t.id=x.topic_id AND t.collection_id=x.collection_id'
     where = ("WHERE x.collection_id=%s AND t.status='active' AND x.version = (SELECT max(v.version) FROM library.topic_version v WHERE v.topic_id=x.topic_id AND v.status='published')")
     with conn() as c:

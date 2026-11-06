@@ -147,8 +147,12 @@ def check(tools, markdown, whole_source=None):
     A FAIL that names no problem is asked once for specifics; if it still names none, it comes back as FAIL with no spans, and the loop checks the same
     version again rather than letting the writer amend with nothing to act on. ERROR: no usable JSON even after two format corrections."""
     if whole_source:
-        user = ('The full source content is included below. You have all the evidence you need — do NOT use any tools. Verify directly from the text and respond with your JSON verdict.\n\n'
-                f'Full source content:\n\n{whole_source}\n\nWiki page to verify:\n\n{markdown}')
+        head = ('The full source content is included below. You have all the evidence you need — do NOT use any tools. Verify directly from the text and respond with your JSON verdict.\n\n'
+                f'Full source content:\n\n{whole_source}\n\n')
+        user = head + f'Wiki page to verify:\n\n{markdown}'
+        model = llm.model_for('verifier')
+        if 'anthropic/' in model or 'claude' in model:                                    # the document is the same in every round, the page is not: cache the document on its own
+            user = [{'type': 'text', 'text': head, 'cache_control': {'type': 'ephemeral'}}, {'type': 'text', 'text': f'Wiki page to verify:\n\n{markdown}'}]
     else:
         user = f'Wiki page to verify:\n\n{markdown}'
     msgs = [{'role': 'system', 'content': prompt('verifier')}, {'role': 'user', 'content': user}]

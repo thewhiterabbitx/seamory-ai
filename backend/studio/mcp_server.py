@@ -120,8 +120,8 @@ def _with_caller(fn, public_name=None):
             tools.log_call(public_name or fn.__name__, shown, {'error': f'{type(e).__name__}: {e}'}, (time.perf_counter() - t0) * 1000)
             raise
         tools.log_call(public_name or fn.__name__, shown, result, (time.perf_counter() - t0) * 1000)
-        return result
-    wrapper.__name__, wrapper.__doc__, wrapper.__annotations__ = public_name or fn.__name__, fn.__doc__, {**fn.__annotations__, 'ctx': Context}
+        return tools.compact(result)                                     # one compact JSON text: no indentation, no structured duplicate
+    wrapper.__name__, wrapper.__doc__, wrapper.__annotations__ = public_name or fn.__name__, fn.__doc__, {**fn.__annotations__, 'ctx': Context, 'return': str}
     wrapper.__signature__ = sig.replace(parameters=[*sig.parameters.values(), inspect.Parameter('ctx', inspect.Parameter.KEYWORD_ONLY, annotation=Context)])
     return wrapper
 
@@ -129,7 +129,23 @@ def _with_caller(fn, public_name=None):
 for tool_name, fn in tools.PUBLIC.items():
     # every tool only reads: clients can auto-approve them instead of asking for each call
     mcp.tool(name=tool_name, title=TITLES.get(tool_name), annotations=ToolAnnotations(title=TITLES.get(tool_name), readOnlyHint=True, destructiveHint=False,
-                                                                                    idempotentHint=True, openWorldHint=False))(_with_caller(fn, tool_name))
+                                                                                    idempotentHint=True, openWorldHint=False), structured_output=False)(_with_caller(fn, tool_name))
+
+
+def _slim(schema):
+    """Input schemas as an agent reads them on every request, without what costs tokens and says nothing: the `title` pydantic adds to each field (it
+    repeats the name) and the anyOf-with-null wrapper of an optional parameter (it is optional because it is not required; its default stays)."""
+    if isinstance(schema, list):
+        return [_slim(x) for x in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {k: _slim(v) for k, v in schema.items() if k != 'title'}
+    alts = out.get('anyOf')
+    if isinstance(alts, list) and len(alts) == 2 and {'type': 'null'} in alts:
+        keep = next(a for a in alts if a != {'type': 'null'})
+        out.pop('anyOf')
+        out = {**keep, **out}
+    return out
 
 
 # tools/list shows the document tools only to a credential that can read at least one collection
@@ -164,8 +180,11 @@ TITLES.update({'library_collections': 'Which document collections can I read?', 
                'library_topic_claims': 'Claims of a topic, with quotes', 'library_topic_sources': 'Documents behind a topic', 'library_traverse': 'Topics around a topic',
                'library_source_search': 'Search the source wikis', 'library_source': 'Read a source', 'library_vocabulary': 'Topic and relation types'})
 for tool_name, fn in library_agent.LIBRARY.items():
-    mcp.tool(name=tool_name, title=TITLES[tool_name], annotations=ToolAnnotations(title=TITLES[tool_name], readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))(_with_caller(fn, tool_name))
+    mcp.tool(name=tool_name, title=TITLES[tool_name], annotations=ToolAnnotations(title=TITLES[tool_name], readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False), structured_output=False)(_with_caller(fn, tool_name))
     tools.BY_NAME[tool_name] = fn                                     # Alfred calls tools by name through tools.call
+
+for _t in mcp._tool_manager.list_tools():                          # every tool, model and document, once all are registered
+    _t.parameters = _slim(_t.parameters)
 
 
 @mcp.resource('ontology://guide', title='How to use this server', mime_type='text/markdown')
