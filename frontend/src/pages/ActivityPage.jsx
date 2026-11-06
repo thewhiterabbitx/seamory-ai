@@ -41,17 +41,17 @@ function Overview() {
           <select style={{ width: 'auto' }} value={hours} onChange={(e) => setHours(+e.target.value)}>{WINDOWS.map(([h, l]) => <option key={h} value={h}>Last {l}</option>)}</select>
           <button className="btn" onClick={load}>Refresh</button></div></div>
       {err && <div className="banner bad">{err}</div>}
-      {sum && <div className="grid cols-2" style={{ marginTop: 14 }}>
-        <div className="card"><h3 style={{ marginTop: 0 }}>Tools</h3>
-          <table><thead><tr><th>Tool</th><th style={{ textAlign: 'right' }}>Calls</th><th style={{ textAlign: 'right' }}>Errors</th><th style={{ textAlign: 'right' }}>Median</th><th style={{ textAlign: 'right' }}>p95</th><th style={{ textAlign: 'right' }}>Answer size</th></tr></thead><tbody>
+      {sum && <div className="grid" style={{ marginTop: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 520px), 1fr))' }}>
+        <div className="card" style={{ minWidth: 0 }}><h3 style={{ marginTop: 0 }}>Tools</h3>
+          <div style={{ overflowX: 'auto' }}><table><thead><tr><th>Tool</th><th style={{ textAlign: 'right' }}>Calls</th><th style={{ textAlign: 'right' }}>Errors</th><th style={{ textAlign: 'right' }}>Median</th><th style={{ textAlign: 'right' }}>p95</th><th style={{ textAlign: 'right' }}>Answer size</th></tr></thead><tbody>
             {sum.tools.map((t) => <tr key={t.name}><td className="mono">{t.name}</td><td style={{ textAlign: 'right' }}>{t.calls}</td><td style={{ textAlign: 'right' }}>{t.errors > 0 ? <Pill tone="warn">{t.errors}</Pill> : 0}</td>
               <td style={{ textAlign: 'right' }}>{ms(t.p50)}</td><td style={{ textAlign: 'right' }}>{ms(t.p95)}</td><td style={{ textAlign: 'right' }} className="small muted">{t.avg_chars ? Math.round(t.avg_chars / 100) / 10 + 'k chars' : ''}</td></tr>)}
-            {!sum.tools.length && <tr><td colSpan="6" className="muted">No tool calls in this window.</td></tr>}</tbody></table></div>
-        <div className="card"><h3 style={{ marginTop: 0 }}>Model calls</h3>
-          <table><thead><tr><th>Model</th><th style={{ textAlign: 'right' }}>Calls</th><th style={{ textAlign: 'right' }}>Median</th><th style={{ textAlign: 'right' }}>First token</th><th style={{ textAlign: 'right' }}>Tokens in / out</th><th style={{ textAlign: 'right' }}>Cost</th></tr></thead><tbody>
+            {!sum.tools.length && <tr><td colSpan="6" className="muted">No tool calls in this window.</td></tr>}</tbody></table></div></div>
+        <div className="card" style={{ minWidth: 0 }}><h3 style={{ marginTop: 0 }}>Model calls</h3>
+          <div style={{ overflowX: 'auto' }}><table><thead><tr><th>Model</th><th style={{ textAlign: 'right' }}>Calls</th><th style={{ textAlign: 'right' }}>Median</th><th style={{ textAlign: 'right' }}>First token</th><th style={{ textAlign: 'right' }}>Tokens in / out</th><th style={{ textAlign: 'right' }}>Cost</th></tr></thead><tbody>
             {sum.llm.map((t) => <tr key={t.name}><td className="mono small">{t.name}</td><td style={{ textAlign: 'right' }}>{t.calls}{t.errors > 0 && <> <Pill tone="warn">{t.errors} failed</Pill></>}</td><td style={{ textAlign: 'right' }}>{ms(t.p50)}</td><td style={{ textAlign: 'right' }}>{ms(t.ttft_p50)}</td>
               <td style={{ textAlign: 'right' }} className="small">{(+t.tokens_in || 0).toLocaleString()} / {(+t.tokens_out || 0).toLocaleString()}</td><td style={{ textAlign: 'right' }}>{usd(t.cost)}</td></tr>)}
-            {!sum.llm.length && <tr><td colSpan="6" className="muted">No model calls in this window.</td></tr>}</tbody></table>
+            {!sum.llm.length && <tr><td colSpan="6" className="muted">No model calls in this window.</td></tr>}</tbody></table></div>
           <p className="small muted" style={{ marginBottom: 0 }}>{sum.sessions.map((s) => `${s.sessions} ${s.source} session${s.sessions === 1 ? '' : 's'} by ${s.actors} ${s.actors === 1 ? 'actor' : 'actors'}`).join(' · ')}</p></div></div>}
 
       <h2 style={{ marginTop: 22 }}>Sessions</h2>
