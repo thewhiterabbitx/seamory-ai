@@ -824,7 +824,7 @@ One PostgreSQL database with pgvector holds the model, its versions, the search 
 
 ## Development
 ```sh
-python -m venv .venv && .venv/bin/pip install --require-hashes -r backend/requirements.lock && .venv/bin/pip install -r backend/requirements-dev.txt   # test tools (pytest, moto)
+python -m venv .venv && .venv/bin/pip install --require-hashes --no-deps -r backend/requirements.lock && .venv/bin/pip install -r backend/requirements-dev.txt   # test tools (pytest, moto)
 docker run -d --name seamory-testdb -e POSTGRES_PASSWORD=dev -p 127.0.0.1:55432:5432 pgvector/pgvector:0.8.7-pg16-bookworm
 export TEST_DATABASE_URL=postgresql://postgres:dev@127.0.0.1:55432/postgres    # any PostgreSQL superuser on a server with pgvector
 cd backend && ../.venv/bin/python -m pytest -q tests      # creates and drops its own throwaway databases; never calls an AI model or the network
