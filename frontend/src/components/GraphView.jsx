@@ -3,7 +3,7 @@ import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY
 import { select } from 'd3-selection'
 import { zoom } from 'd3-zoom'
 
-const PALETTE = ['#4f6df5', '#e8590c', '#2f9e44', '#ae3ec9', '#1098ad', '#d6336c', '#f08c00', '#5c7cfa', '#868e96', '#66a80f']
+const PALETTE = ['#0b7a75', '#e8590c', '#2f9e44', '#ae3ec9', '#1971c2', '#d6336c', '#f08c00', '#5c7cfa', '#868e96', '#66a80f']   // led by the brand teal; no other teal, so domains stay distinct
 const EDGE = { confirmed: ['#98a1ba', ''], optional: ['#d99a2b', '5 4'], unreliable: ['#e05252', '3 3'] }
 
 export default function GraphView({ nodes, edges, highlight = [], onNode, height }) {

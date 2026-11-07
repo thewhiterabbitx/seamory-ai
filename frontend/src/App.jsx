@@ -46,7 +46,7 @@ function Login({ onLogin }) {
   return (
     <form className="card login" onSubmit={go}>
       <Mark h={56} style={{ marginBottom: 10 }} />
-      <h1>Seamory <span style={{ color: 'var(--accent)' }}>AI</span></h1><p className="muted">Sign in</p>
+      <h1 className="wordmark">Seamory <span style={{ color: 'var(--accent)', fontWeight: 600 }}>AI</span></h1><p className="muted">Sign in</p>
       <div className="field"><label>Username</label><input value={u} onChange={(e) => setU(e.target.value)} autoFocus /></div>
       <div className="field"><label>Password</label><input type="password" value={p} onChange={(e) => setP(e.target.value)} /></div>
       {err && <div className="banner bad">{err}</div>}

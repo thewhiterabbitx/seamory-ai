@@ -12,6 +12,7 @@ Licences were read from the installed packages' metadata and the pinned lock fil
 | `certifi`, `tqdm` | MPL-2.0 (tqdm: MPL-2.0 AND MIT) | OK; file-level copyleft, unmodified |
 | `numpy`, `py-rust-stemmers` | not in package metadata | BSD-3 (numpy) and MIT/Apache-2.0 (stemmers) per their repositories: OK |
 | Frontend: react, react-dom, react-markdown, react-router-dom, remark-gfm, vite, d3-* | MIT / ISC | OK |
+| Font: Bricolage Grotesque (`@fontsource-variable/bricolage-grotesque`, the wordmark) | SIL Open Font License 1.1 | OK; bundled in the image, its licence ships in the package. The app never loads fonts from a font host |
 | `boto3`, `botocore`, `s3transfer` (S3 storage; now in the image) | Apache-2.0 | OK |
 | `jmespath`, `python-dateutil`, `six` (boto3's dependencies) | MIT / Apache-2.0 + BSD / MIT | OK |
 | `moto` (tests only, not in the image) | Apache-2.0 | OK |

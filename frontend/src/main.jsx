@@ -4,6 +4,7 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import App from './App.jsx'
+import '@fontsource-variable/bricolage-grotesque/opsz.css'     // the brand face of the wordmark, bundled: the app never calls a font host
 import './styles.css'
 
 createRoot(document.getElementById('root')).render(<BrowserRouter><App /></BrowserRouter>)
